@@ -4,17 +4,19 @@ from keras.preprocessing.image import load_img, img_to_array
 import psycopg2
 import requests
 import json
+from colorama import Fore
 
 
-def read_and_prep_images(img_paths, img_height=224, img_width=224):
+def read_and_prep_images(img_dict, img_height=224, img_width=224):
     """
     Read and preprocess the images to load into the model.
 
-    :param img_paths: List - list of strings with paths to the images
+    :param img_dict: Dictionary - list of strings with paths to the images
     :param img_height: Int - the desired height of the image
     :param img_width: Int - the desired width of the image
     :return: The encoded and preprocessed images.
     """
+    img_paths = [i[0] for i in img_dict.values()]
     images = [load_img(img_path, target_size=(img_height, img_width)) for img_path in img_paths]
     img_array = np.array([img_to_array(img) for img in images])
     output = preprocess_input(img_array)
@@ -47,7 +49,7 @@ def decode_predictions(predictions, class_list_path, top=3):
 
 class PostgressImageDownloader:
 
-    def __init__(self,connection_params,table_name):
+    def __init__(self, connection_params, table_name):
         '''
         Constructs PostgressImageDownloader class.
 
@@ -63,6 +65,8 @@ class PostgressImageDownloader:
 
         self.img_paths = []
 
+        self.upload_dict = {}
+
     def connect_to_database(self):
         '''
         Establish a connection to the database.
@@ -75,8 +79,8 @@ class PostgressImageDownloader:
 
             return True
         except Exception as e:
-            print("Failed to initialize database connection.")
-            print("Error message:")
+            print(Fore.RED + "Failed to initialize database connection.")
+            print(Fore.RED + "Error message:")
             print(e)
 
             return False
@@ -100,20 +104,20 @@ class PostgressImageDownloader:
 
             for row in rows:
                 response = requests.get(row[1])
-                file_name = row[1].replace('http://pbs.twimg.com/media/','')
-                file_name = file_name.replace(':','')
-                file_name = file_name.replace('/','-')
+                file_name = row[1].replace('http://pbs.twimg.com/media/', '')
+                file_name = file_name.replace(':', '')
+                file_name = file_name.replace('/', '-')
                 full_path = save_dir + file_name
-                self.img_paths.append(full_path)
+                self.upload_dict[row[2]] = [full_path]
                 print(f'Downloading file at {row[1]}\n'
                       f'    Saving at:  {full_path}')
-                open(full_path,'wb').write(response.content)
+                open(full_path, 'wb').write(response.content)
 
             return True
 
         except Exception as e:
-            print(f"Failed to download images at {save_dir}")
-            print("Error message:")
+            print(Fore.RED + f"Failed to download images at {save_dir}")
+            print(Fore.RED + "Error message:")
             print(e)
 
             return False
@@ -128,8 +132,78 @@ class PostgressImageDownloader:
             self.conn.close()
             return True
         except Exception as e:
-            print("Failed to close the connection.")
-            print("Error message:")
+            print(Fore.RED + "Failed to close the connection.")
+            print(Fore.RED + "Error message:")
+            print(e)
+
+            return False
+
+    def generate_upload_dict(self):
+        """
+        Firs prep of the upload_dict.
+        
+        :return: self.upload_dict
+        """
+        self.cursor.execute("""
+                            SELECT
+                                *
+                            FROM sabueso_clean
+                            """)
+        sabueso_clean = self.cursor.fetchall()
+        self.cursor.execute("""
+                            SELECT
+                                *
+                            FROM sabueso_img
+                            """)
+        sabueso_img = self.cursor.fetchall()
+        self.cursor.execute("""
+                            SELECT
+                                *
+                            FROM sabueso_tweet
+                            """)
+        sabueso_tweet = self.cursor.fetchall()
+
+        for row in sabueso_tweet:
+            self.upload_dict[row[3]].append(row[0])
+
+        return self.upload_dict
+
+    def update_database(self, table_name, column_name, commit_transaction=False):
+        """
+        Update the database with the information in self.upload_dict.
+        
+        :rtype: object
+        :param table_name: String - the name of the table to update.
+        :param column_name: String - the name of the column to update.
+        :param commit_transaction: Bool - Whether to commit the transaction.
+        :return: True if the database was successfully updated, False otherwise.
+        """
+
+        try:
+            for value in self.upload_dict.values():
+                string_to_upload = ""
+
+                for label in value[2]:
+                    string_to_upload += label + ','
+
+                command = f"""
+                    UPDATE {table_name}
+                        SET {column_name} = '{string_to_upload}'
+                    WHERE parent_tweet_id = {value[1]}
+                """
+
+                if commit_transaction:
+                    command += "COMMIT;"
+
+                self.cursor.execute(command)
+
+            print("Update Successful!")
+
+            return True
+
+        except Exception as e:
+            print(Fore.RED + "Failed to update database.")
+            print(Fore.RED + "Error message:")
             print(e)
 
             return False
